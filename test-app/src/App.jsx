@@ -1,11 +1,12 @@
 import { useState } from 'react'
-import PromotionsPage from './PromotionsPage.jsx'
+import Customer from './customer.jsx' // Changed from PromotionsPage
 import InventoryDashboard from './InventoryDashboard.jsx'
 
-/** @typedef {'promotions' | 'inventory'} AppPage */
+/** @typedef {'customer' | 'inventory'} AppPage */ // Updated type
 
 export default function App() {
-  const [page, setPage] = useState(/** @type {AppPage} */ ('inventory'))
+  // Defaulting to 'customer' so you see the menu first
+  const [page, setPage] = useState(/** @type {AppPage} */ ('customer'))
 
   const navBtn =
     'text-sm font-semibold pb-0.5 border-b-2 border-transparent hover:opacity-80 transition-colors'
@@ -17,10 +18,10 @@ export default function App() {
         <div className="flex flex-wrap items-center gap-4 sm:gap-6">
           <button
             type="button"
-            onClick={() => setPage('promotions')}
-            className={`${navBtn} ${page === 'promotions' ? 'text-[#D98C5F] border-[#D98C5F]' : 'text-[#5BC0DE]'}`}
+            onClick={() => setPage('customer')} // Updated onClick
+            className={`${navBtn} ${page === 'customer' ? 'text-[#D98C5F] border-[#D98C5F]' : 'text-[#5BC0DE]'}`}
           >
-            Promotions
+            Customer Menu
           </button>
           <button
             type="button"
@@ -40,7 +41,8 @@ export default function App() {
         </div>
       </nav>
 
-      {page === 'promotions' ? <PromotionsPage /> : <InventoryDashboard />}
+      {/* Conditional Rendering Logic Updated */}
+      {page === 'customer' ? <Customer /> : <InventoryDashboard />}
 
       <footer className="w-full h-16 bg-[#D9C8B1] border-t border-[#BFA888] mt-auto" />
     </div>

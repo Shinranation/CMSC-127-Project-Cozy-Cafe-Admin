@@ -6,6 +6,6 @@ import Customer from './customer.jsx'
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <Customer />
+    <App />
   </StrictMode>,
 )

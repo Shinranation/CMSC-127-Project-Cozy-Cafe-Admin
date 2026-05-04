@@ -39,47 +39,6 @@ export default function Customer() {
 
   return (
     <div className="min-h-screen bg-[#F7F0E6] text-[#3B2F2A]">
-      <header className="bg-white">
-        <div className="mx-auto flex max-w-6xl items-center justify-between px-10 py-6">
-          <h1 className="text-3xl font-extrabold tracking-tight text-[#5BC0DE]">
-            Cozy Coffee
-          </h1>
-
-          <nav className="flex items-center gap-10 text-lg font-semibold">
-            <a
-              href="#"
-              className="text-[#D98C5F] underline decoration-[#D98C5F] underline-offset-4"
-            >
-              Home
-            </a>
-            <a href="#" className="text-[#5BC0DE] hover:opacity-80">
-              Menu
-            </a>
-            <a href="#" className="text-[#5BC0DE] hover:opacity-80">
-              About Us
-            </a>
-
-            <button
-              type="button"
-              aria-label="Profile"
-              className="grid h-12 w-12 place-items-center rounded-full border-2 border-black/30 text-black/70"
-            >
-              <svg
-                viewBox="0 0 24 24"
-                className="h-6 w-6"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="1.8"
-              >
-                <path d="M20 21a8 8 0 1 0-16 0" />
-                <circle cx="12" cy="8" r="4" />
-              </svg>
-            </button>
-          </nav>
-        </div>
-
-        <div className="h-[2px] w-full bg-[#1E96AE]" />
-      </header>
 
       <main className="mx-auto max-w-6xl px-10 pb-16">
         <h2 className="py-28 text-center text-7xl font-extrabold tracking-tight text-gray-500/80">
