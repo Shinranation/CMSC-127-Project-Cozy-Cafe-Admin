@@ -80,7 +80,6 @@ export default function App() {
 
       {/* NAVBAR */}
       <nav className="flex justify-between items-center px-6 py-4 bg-white border-b">
-
         <h1 className="font-bold text-[#5BC0DE]">
           Cozy Coffee
         </h1>
@@ -95,29 +94,33 @@ export default function App() {
             Customer
           </button>
 
-          {/* ADMIN PAGES (always visible buttons, but protected on render) */}
-          <button
-            className={navBtn}
-            onClick={() => setPage('inventory')}
-          >
-            Inventory
-          </button>
+          {/* ADMIN PAGES (only show if admin) */}
+          {adminSignedIn && (
+            <>
+              <button
+                className={navBtn}
+                onClick={() => setPage('inventory')}
+              >
+                Inventory
+              </button>
 
-          <button
-            className={navBtn}
-            onClick={() => setPage('revenue')}
-          >
-            Revenue
-          </button>
+              <button
+                className={navBtn}
+                onClick={() => setPage('revenue')}
+              >
+                Revenue
+              </button>
 
-          <button
-            className={navBtn}
-            onClick={() => setPage('queue')}
-          >
-            Queue
-          </button>
+              <button
+                className={navBtn}
+                onClick={() => setPage('queue')}
+              >
+                Queue
+              </button>
+            </>
+          )}
 
-          {/* LOGIN BUTTON */}
+          {/* LOGIN BUTTON (ALWAYS VISIBLE) */}
           <button
             className="text-lg px-2"
             onClick={() => setPage('login')}
