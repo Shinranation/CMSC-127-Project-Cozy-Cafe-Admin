@@ -3,6 +3,7 @@ import Customer from './customer.jsx'
 import InventoryDashboard from './InventoryDashboard.jsx'
 import RevenuePage from './RevenuePage.jsx'
 import QueuePage from './QueuePage.jsx'
+import NewOrder from './NewOrder.jsx'
 import Login from './Login.jsx'
 import { supabase } from './lib/supabaseClient.js'
 
@@ -148,7 +149,11 @@ export default function App() {
 
       {page === 'revenue' && adminSignedIn && <RevenuePage />}
 
-      {page === 'queue' && adminSignedIn && <QueuePage />}
+      {page === 'queue' && adminSignedIn && (
+        <QueuePage onNewOrder={() => setPage('newOrder')} />
+      )}
+
+      {page === 'newOrder' && adminSignedIn && <NewOrder />}
 
       {page === 'login' && (
         <Login

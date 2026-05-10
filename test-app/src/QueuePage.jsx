@@ -1,6 +1,6 @@
 import { useState } from 'react'
 
-export default function AdminDashboardQueue() {
+export default function AdminDashboardQueue({ onNewOrder }) {
   // Mock data for the orders
   const QUEUE_ORDERS = [
     { id: 'Order #001', customer: 'Juan Dela Cruz', itemsCount: 6 },
@@ -11,7 +11,6 @@ export default function AdminDashboardQueue() {
   return (
     <main className="min-h-screen bg-[#FDFBF4] py-10 px-4 font-sans text-gray-700">
       <div className="max-w-6xl mx-auto">
-        
         {/* Header Section */}
         <header className="text-center mb-16">
           <h1 className="text-6xl md:text-7xl font-bold text-gray-500/80 leading-tight">
@@ -19,11 +18,21 @@ export default function AdminDashboardQueue() {
           </h1>
         </header>
 
+        {/* New Order Button */}
+        <div className="mb-10 flex justify-start px-2">
+          <button
+            type="button"
+            onClick={() => onNewOrder?.()}
+            className="inline-flex items-center rounded-full bg-[#D98C5F] px-6 py-3 text-sm font-bold text-white shadow-sm transition hover:opacity-90"
+          >
+            + New Order
+          </button>
+        </div>
+
         {/* Queue Rows */}
         <div className="space-y-12">
           {QUEUE_ORDERS.map((order) => (
             <section key={order.id} className="relative">
-              
               {/* Top Bar: Order Number and Name */}
               <div className="flex items-center gap-8 mb-4 px-2">
                 <div className="bg-[#D9C5B2] px-6 py-2 rounded-full border border-gray-400/30 shadow-sm">
@@ -40,13 +49,13 @@ export default function AdminDashboardQueue() {
               <div className="bg-white border-2 border-[#D98C5F]/40 rounded-[2.5rem] p-6 shadow-sm overflow-x-auto">
                 <div className="flex gap-6 min-w-max">
                   {[...Array(order.itemsCount)].map((_, i) => (
-                    <div 
-                      key={i} 
+                    <div
+                      key={i}
                       className="w-36 bg-white border border-[#D98C5F]/30 rounded-[1.5rem] p-3 flex flex-col items-center gap-2"
                     >
                       {/* Image Placeholder Box */}
                       <div className="w-full aspect-square bg-white border border-gray-300 rounded-lg relative overflow-hidden">
-                         {/* Wireframe X design */}
+                        {/* Wireframe X design */}
                         <div className="absolute inset-0 flex items-center justify-center opacity-20">
                           <div className="absolute w-full h-[1px] bg-black rotate-45"></div>
                           <div className="absolute w-full h-[1px] bg-black -rotate-45"></div>
@@ -55,9 +64,13 @@ export default function AdminDashboardQueue() {
 
                       {/* Text placeholders */}
                       <div className="text-center space-y-1">
-                        <p className="text-[10px] font-bold text-gray-500">XXx Orders</p>
+                        <p className="text-[10px] font-bold text-gray-500">
+                          XXx Orders
+                        </p>
                         <div className="border border-gray-400 rounded-full px-4 py-0.5">
-                          <p className="text-[9px] font-bold text-gray-600 uppercase">Name</p>
+                          <p className="text-[9px] font-bold text-gray-600 uppercase">
+                            Name
+                          </p>
                         </div>
                       </div>
                     </div>
@@ -67,7 +80,6 @@ export default function AdminDashboardQueue() {
             </section>
           ))}
         </div>
-
       </div>
     </main>
   )
