@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { supabase, supabaseConfigured } from './lib/supabaseClient.js'
 
-export default function Login({ onClose, onAdminAccess, adminSignedIn, signedInEmail }) {
+export default function Login({ onClose, onAdminAccess, onGoToSignup, adminSignedIn, signedInEmail }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [status, setStatus] = useState(null)
@@ -16,7 +16,10 @@ export default function Login({ onClose, onAdminAccess, adminSignedIn, signedInE
     const redirectTo = `${window.location.origin}`
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
-      options: { redirectTo },
+      options: {
+        redirectTo,
+        queryParams: { prompt: 'select_account' },
+      },
     })
 
     if (error) {
@@ -128,6 +131,9 @@ export default function Login({ onClose, onAdminAccess, adminSignedIn, signedInE
         <div className="mt-12 text-center text-xs space-x-3 text-gray-500">
             <button type="button" onClick={onClose} className="hover:text-[#D79A6F] underline">
                 Back to Promotions
+            </button>
+            <button type="button" onClick={onGoToSignup} className="hover:text-[#D79A6F] underline">
+                Create account
             </button>
             {!adminSignedIn && (
                 <button type="button" onClick={onAdminAccess} className="hover:text-[#D79A6F] underline">
