@@ -5,9 +5,10 @@ import RevenuePage from './RevenuePage.jsx'
 import QueuePage from './QueuePage.jsx'
 import NewOrder from './NewOrder.jsx'
 import Login from './Login.jsx'
+import Signup from './Signup.jsx'
 import { supabase } from './lib/supabaseClient.js'
 
-/** @typedef {'customer' | 'inventory' | 'revenue' | 'queue' | 'login'} AppPage */
+/** @typedef {'customer' | 'inventory' | 'revenue' | 'queue' | 'login' | 'signup'} AppPage */
 
 export default function App() {
   const [page, setPage] = useState('customer')
@@ -159,8 +160,16 @@ export default function App() {
         <Login
           onClose={() => setPage('customer')}
           onAdminAccess={() => setPage('customer')}
+          onGoToSignup={() => setPage('signup')}
           adminSignedIn={adminSignedIn}
           signedInEmail={signedInUser?.email ?? null}
+        />
+      )}
+
+      {page === 'signup' && (
+        <Signup
+          onBackToLogin={() => setPage('login')}
+          onClose={() => setPage('customer')}
         />
       )}
     </div>
