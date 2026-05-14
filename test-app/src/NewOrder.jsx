@@ -1,61 +1,71 @@
-import { useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
+import { supabase, supabaseConfigured, defaultPosCashierId } from './lib/supabaseClient.js'
 
-export default function NewOrder({ onBack }) {
-  const categories = useMemo(
-    () => [
-      'All',
-      'Rice Bowl Chicken Wings',
-      'French Fries',
-      'Waffles',
-      'Soft Drinks',
-      'Korean Rice Bowls',
-      'Sandwiches',
-      'Silog Bowls',
-      'Others',
-    ],
-    []
-  )
+/** @typedef {{ item_id: number, name: string, price: number, category: string, available_units: number }} MenuItemRow */
 
-  // Mock menu items (replace with DB later)
-  // ✅ Added at least one item per category
-  const items = useMemo(
-    () => [
-      // Rice Bowl Chicken Wings
-      {
-        id: 'rbw-1',
-        name: 'Chicken Teriraki Bowl',
-        price: 99,
-        category: 'Rice Bowl Chicken Wings',
-      },
+function parseRpcJsonArray(data) {
+  if (data == null) return []
+  if (Array.isArray(data)) return data
+  if (typeof data === 'string') {
+    try {
+      const p = JSON.parse(data)
+      return Array.isArray(p) ? p : []
+    } catch {
+      return []
+    }
+  }
+  return []
+}
 
-      // French Fries
-      { id: 'ff-1', name: 'Classic French Fries', price: 85, category: 'French Fries' },
-
-      // Waffles
-      { id: 'wf-1', name: 'Waffle Maple Cinnamon', price: 89, category: 'Waffles' },
-
-      // Soft Drinks
-      { id: 'sd-1', name: 'Coke', price: 25, category: 'Soft Drinks' },
-
-      // Korean Rice Bowls
-      { id: 'krb-1', name: 'Bibimbap (Beef)', price: 139, category: 'Korean Rice Bowls' },
-
-      // Sandwiches
-      { id: 'sw-1', name: 'Tuna Cheese Toast', price: 99, category: 'Sandwiches' },
-
-      // Silog Bowls
-      { id: 'slg-1', name: 'Beef Tapa', price: 99, category: 'Silog Bowls' },
-
-      // Others
-      { id: 'ot-1', name: 'Carbonara', price: 159, category: 'Others' },
-    ],
-    []
-  )
+export default function NewOrder({ onBack, onCancel }) {
+  const configured = supabaseConfigured()
+  const [items, setItems] = useState(/** @type {MenuItemRow[]} */ ([]))
+  const [menuLoading, setMenuLoading] = useState(true)
+  const [menuError, setMenuError] = useState(/** @type {string | null} */ (null))
 
   const [activeCategory, setActiveCategory] = useState('All')
+  /** cart: menu item_id -> qty */
+  const [qty, setQty] = useState(/** @type {Record<number, number>} */ ({}))
+  const [stockMessage, setStockMessage] = useState(/** @type {string | null} */ (null))
+  const [confirmError, setConfirmError] = useState(/** @type {string | null} */ (null))
+  const [confirmBusy, setConfirmBusy] = useState(false)
+  const [guestDisplayName, setGuestDisplayName] = useState('')
 
-  // quantities: { [itemId]: number }
-  const [qty, setQty] = useState({})
+  const loadMenu = useCallback(async () => {
+    if (!supabase) return
+    setMenuError(null)
+    setMenuLoading(true)
+    const { data, error } = await supabase.rpc('get_menu_for_pos')
+    if (error) {
+      setMenuError(error.message)
+      setItems([])
+      setMenuLoading(false)
+      return
+    }
+    const raw = parseRpcJsonArray(data)
+    const mapped = raw.map((r) => ({
+      item_id: Number(r.item_id),
+      name: String(r.name ?? ''),
+      price: Number(r.price) || 0,
+      category: String(r.category ?? ''),
+      available_units: Number(r.available_units) || 0,
+    }))
+    setItems(mapped.filter((r) => Number.isFinite(r.item_id) && r.item_id > 0))
+    setMenuLoading(false)
+  }, [])
+
+  useEffect(() => {
+    if (!configured || !supabase) {
+      setMenuLoading(false)
+      return
+    }
+    void loadMenu()
+  }, [configured, loadMenu])
+
+  const categories = useMemo(() => {
+    const fromDb = [...new Set(items.map((i) => i.category).filter(Boolean))].sort()
+    return ['All', ...fromDb]
+  }, [items])
 
   const visibleItems = useMemo(() => {
     if (activeCategory === 'All') return items
@@ -63,13 +73,13 @@ export default function NewOrder({ onBack }) {
   }, [activeCategory, items])
 
   const orderList = useMemo(() => {
-    const byId = new Map(items.map((i) => [i.id, i]))
+    const byId = new Map(items.map((i) => [i.item_id, i]))
     return Object.entries(qty)
       .map(([id, n]) => {
-        const item = byId.get(id)
+        const item = byId.get(Number(id))
         if (!item) return null
         return {
-          id,
+          id: item.item_id,
           name: item.name,
           price: item.price,
           qty: n,
@@ -79,19 +89,30 @@ export default function NewOrder({ onBack }) {
       .filter(Boolean)
   }, [qty, items])
 
-  const totalItems = useMemo(() => {
-    return Object.values(qty).reduce((sum, n) => sum + n, 0)
-  }, [qty])
+  const totalItems = useMemo(() => Object.values(qty).reduce((sum, n) => sum + n, 0), [qty])
 
-  const totalPrice = useMemo(() => {
-    return orderList.reduce((sum, row) => sum + row.lineTotal, 0)
-  }, [orderList])
+  const totalPrice = useMemo(() => orderList.reduce((sum, row) => sum + row.lineTotal, 0), [orderList])
 
-  function inc(id) {
-    setQty((prev) => ({ ...prev, [id]: (prev[id] ?? 0) + 1 }))
+  function inc(item) {
+    setStockMessage(null)
+    setConfirmError(null)
+    const id = item.item_id
+    const cur = qty[id] ?? 0
+    const cap = Math.floor(item.available_units)
+    if (cur + 1 > cap) {
+      setStockMessage(
+        cap <= 0
+          ? `${item.name} is out of stock.`
+          : `Only ${cap} available for ${item.name}. Try a smaller quantity.`,
+      )
+      return
+    }
+    setQty((prev) => ({ ...prev, [id]: cur + 1 }))
   }
 
   function dec(id) {
+    setStockMessage(null)
+    setConfirmError(null)
     setQty((prev) => {
       const next = Math.max(0, (prev[id] ?? 0) - 1)
       const copy = { ...prev }
@@ -101,23 +122,80 @@ export default function NewOrder({ onBack }) {
     })
   }
 
-  function handleConfirmOrder() {
-    onBack?.()
+  async function handleConfirmOrder() {
+    if (!supabase || totalItems === 0) return
+    setConfirmError(null)
+    setStockMessage(null)
+    setConfirmBusy(true)
+    const p_lines = orderList.map((row) => ({
+      menu_item_id: row.id,
+      quantity: row.qty,
+    }))
+    const { data: orderId, error } = await supabase.rpc('confirm_pos_order', {
+      p_cashier_id: defaultPosCashierId(),
+      p_client_id: null,
+      p_guest_display_name: guestDisplayName.trim() || null,
+      p_lines,
+    })
+    setConfirmBusy(false)
+    if (error) {
+      const msg = error.message ?? String(error)
+      setConfirmError(msg.includes('INSUFFICIENT_STOCK') ? msg.replace(/^.*INSUFFICIENT_STOCK:\s*/i, '') : msg)
+      return
+    }
+    if (orderId != null) {
+      setQty({})
+      setGuestDisplayName('')
+      onBack?.()
+    }
   }
 
   return (
     <main className="min-h-screen bg-[#FDFBF4] px-4 py-10 font-sans text-gray-700">
       <div className="mx-auto max-w-[90rem]">
-        {/* Title */}
         <header className="mb-10 text-center">
-          <h1 className="text-6xl md:text-7xl font-bold text-gray-500/80 leading-tight">
-            New Order
-          </h1>
+          <h1 className="text-6xl md:text-7xl font-bold text-gray-500/80 leading-tight">New Order</h1>
+          {onCancel && (
+            <button
+              type="button"
+              onClick={() => onCancel()}
+              className="mt-4 text-sm font-bold text-[#D98C5F] underline hover:opacity-90"
+            >
+              ← Back to queue
+            </button>
+          )}
         </header>
 
-        {/* Content: sidebar + grid + order list */}
+        {!configured && (
+          <p className="mb-6 text-center text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+            Supabase is not configured. Set <code className="text-xs bg-white px-1 rounded">VITE_SUPABASE_URL</code> and{' '}
+            <code className="text-xs bg-white px-1 rounded">VITE_SUPABASE_ANON_KEY</code>.
+          </p>
+        )}
+
+        {menuError && (
+          <p className="mb-6 text-center text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+            {menuError}
+            <button
+              type="button"
+              className="ml-2 text-xs font-bold underline text-[#D98C5F]"
+              onClick={() => void loadMenu()}
+            >
+              Retry
+            </button>
+          </p>
+        )}
+
+        {(stockMessage || confirmError) && (
+          <div
+            className="mb-6 text-center text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded-xl px-4 py-3"
+            role="alert"
+          >
+            {stockMessage ?? confirmError}
+          </div>
+        )}
+
         <div className="grid gap-8 xl:grid-cols-[260px_1fr_360px]">
-          {/* Sidebar categories */}
           <aside className="-ml-6 space-y-3">
             {categories.map((cat) => {
               const active = cat === activeCategory
@@ -139,51 +217,57 @@ export default function NewOrder({ onBack }) {
             })}
           </aside>
 
-          {/* Items grid */}
           <section>
+            {menuLoading && (
+              <p className="text-center text-gray-500 text-sm py-12" aria-live="polite">
+                Loading menu…
+              </p>
+            )}
+            {!menuLoading && items.length === 0 && !menuError && (
+              <p className="text-center text-gray-500 text-sm py-12">No menu items returned.</p>
+            )}
             <div className="grid grid-cols-1 gap-8 sm:grid-cols-2 lg:grid-cols-3">
               {visibleItems.map((item) => {
-                const count = qty[item.id] ?? 0
+                const count = qty[item.item_id] ?? 0
+                const cap = Math.floor(item.available_units)
 
                 return (
                   <article
-                    key={item.id}
+                    key={item.item_id}
                     className="bg-white border border-gray-400/40 shadow-sm rounded-2xl p-4"
                   >
                     <p className="text-center text-xs font-extrabold tracking-wide text-gray-700 uppercase">
                       {item.name}
                     </p>
 
-                    {/* Image placeholder */}
                     <div className="mt-3 aspect-square w-full rounded-xl border border-gray-300 bg-white relative overflow-hidden">
                       <div className="absolute inset-0 flex items-center justify-center opacity-20">
-                        <div className="absolute w-full h-[1px] bg-black rotate-45"></div>
-                        <div className="absolute w-full h-[1px] bg-black -rotate-45"></div>
+                        <div className="absolute w-full h-[1px] bg-black rotate-45" />
+                        <div className="absolute w-full h-[1px] bg-black -rotate-45" />
                       </div>
                     </div>
 
-                    <p className="mt-3 text-center text-sm font-extrabold text-gray-700">
-                      ₱{item.price.toFixed(2)}
+                    <p className="mt-3 text-center text-sm font-extrabold text-gray-700">₱{item.price.toFixed(2)}</p>
+                    <p className="mt-1 text-center text-[10px] font-bold text-gray-500">
+                      Available: {cap} {cap === 1 ? 'serving' : 'servings'}
                     </p>
 
-                    {/* + / - controls */}
                     <div className="mt-3 flex items-center justify-center gap-3">
                       <button
                         type="button"
-                        onClick={() => inc(item.id)}
-                        className="grid h-8 w-10 place-items-center rounded-lg border border-[#D98C5F]/40 bg-[#D98C5F]/10 text-[#D98C5F] font-extrabold hover:bg-[#D98C5F]/15"
+                        onClick={() => inc(item)}
+                        disabled={!configured || count >= cap}
+                        className="grid h-8 w-10 place-items-center rounded-lg border border-[#D98C5F]/40 bg-[#D98C5F]/10 text-[#D98C5F] font-extrabold hover:bg-[#D98C5F]/15 disabled:opacity-40 disabled:cursor-not-allowed"
                         aria-label={`Add ${item.name}`}
                       >
                         +
                       </button>
 
-                      <span className="min-w-8 text-center font-bold text-gray-700">
-                        {count}
-                      </span>
+                      <span className="min-w-8 text-center font-bold text-gray-700">{count}</span>
 
                       <button
                         type="button"
-                        onClick={() => dec(item.id)}
+                        onClick={() => dec(item.item_id)}
                         className="grid h-8 w-10 place-items-center rounded-lg border border-gray-400/40 bg-black/5 text-gray-700 font-extrabold hover:bg-black/10"
                         aria-label={`Remove ${item.name}`}
                         disabled={count === 0}
@@ -197,16 +281,25 @@ export default function NewOrder({ onBack }) {
             </div>
           </section>
 
-          {/* Order list (right side) */}
           <aside className="xl:sticky xl:top-6 h-fit">
             <div className="bg-white border border-gray-400/40 shadow-sm rounded-2xl p-5">
               <h2 className="text-lg font-extrabold text-gray-700">Order List</h2>
 
+              <label className="mt-3 block text-[10px] font-bold text-gray-500 uppercase tracking-wide">
+                Customer name (optional)
+                <input
+                  type="text"
+                  value={guestDisplayName}
+                  onChange={(e) => setGuestDisplayName(e.target.value)}
+                  placeholder="Walk-in guest"
+                  className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-normal text-gray-800"
+                  maxLength={120}
+                />
+              </label>
+
               <div className="mt-4 max-h-[420px] overflow-auto pr-1">
                 {orderList.length === 0 ? (
-                  <p className="text-sm text-gray-500">
-                    No items added yet. Use the + button to add items.
-                  </p>
+                  <p className="text-sm text-gray-500">No items added yet. Use the + button to add items.</p>
                 ) : (
                   <ul className="space-y-3">
                     {orderList.map((row) => (
@@ -221,9 +314,7 @@ export default function NewOrder({ onBack }) {
                           </p>
                         </div>
 
-                        <p className="shrink-0 font-extrabold text-gray-800">
-                          ₱{row.lineTotal.toFixed(2)}
-                        </p>
+                        <p className="shrink-0 font-extrabold text-gray-800">₱{row.lineTotal.toFixed(2)}</p>
                       </li>
                     ))}
                   </ul>
@@ -232,28 +323,26 @@ export default function NewOrder({ onBack }) {
 
               <div className="mt-6 border-t border-gray-200 pt-4">
                 <p className="text-sm text-gray-600">
-                  {totalItems} {totalItems === 1 ? 'order' : 'orders'} added
+                  {totalItems} {totalItems === 1 ? 'item' : 'items'} added
                 </p>
 
                 <div className="mt-3 flex items-center justify-between">
                   <p className="text-lg font-extrabold text-gray-800">TOTAL:</p>
-                  <p className="text-lg font-extrabold text-gray-800">
-                    ₱{totalPrice.toFixed(2)}
-                  </p>
+                  <p className="text-lg font-extrabold text-gray-800">₱{totalPrice.toFixed(2)}</p>
                 </div>
 
                 <button
                   type="button"
-                  onClick={handleConfirmOrder}
-                  disabled={totalItems === 0}
+                  onClick={() => void handleConfirmOrder()}
+                  disabled={totalItems === 0 || confirmBusy || !configured || menuLoading}
                   className={[
                     'mt-4 w-full rounded-full px-8 py-4 font-extrabold shadow-md transition',
-                    totalItems === 0
+                    totalItems === 0 || confirmBusy || !configured || menuLoading
                       ? 'bg-gray-300 text-gray-600 cursor-not-allowed'
                       : 'bg-[#D98C5F] text-white hover:opacity-90',
                   ].join(' ')}
                 >
-                  Confirm Order
+                  {confirmBusy ? 'Saving…' : 'Confirm Order'}
                 </button>
               </div>
             </div>
