@@ -10,3 +10,9 @@ export const supabase =
 export function supabaseConfigured() {
   return Boolean(url && anonKey)
 }
+
+/** Default `cashier_id` for POS RPCs / inventory audit (matches seed `cashier` row). */
+export function defaultPosCashierId() {
+  const n = Number(import.meta.env.VITE_TX_CASHIER_ID)
+  return Number.isInteger(n) && n > 0 ? n : 1
+}

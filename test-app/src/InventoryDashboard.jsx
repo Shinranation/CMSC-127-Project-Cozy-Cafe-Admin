@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase, supabaseConfigured } from './lib/supabaseClient.js'
 
-/** @typedef {{ ingredient_id: number, name: string, current_quantity: number, unit_of_measure: string, low_stock: number }} InventoryRow */
+/** @typedef {{ item_id: number, menu_name: string, category: string, ingredient_id: number, current_quantity: number, unit_of_measure: string, low_stock: number }} MenuInventoryRow */
 
 /** Avoid NaN when Postgres / Realtime sends null, blanks, or non-numeric strings. */
 function safeNumeric(raw, fallback = 0) {
@@ -16,39 +16,63 @@ function normalizeUnit(raw) {
   return s === '' ? '—' : s
 }
 
-function normalizeInventoryRow(raw) {
-  const id = Number(raw.ingredient_id)
+function parseRpcJsonArray(data) {
+  if (data == null) return []
+  if (Array.isArray(data)) return data
+  if (typeof data === 'string') {
+    try {
+      const p = JSON.parse(data)
+      return Array.isArray(p) ? p : []
+    } catch {
+      return []
+    }
+  }
+  return []
+}
+
+function normalizeMenuInventoryRow(raw) {
+  const itemId = Number(raw.item_id)
+  const ingId = Number(raw.inventory_ingredient_id)
   return {
-    ingredient_id: Number.isFinite(id) ? id : safeNumeric(raw.ingredient_id, 0),
-    name: String(raw.name ?? ''),
-    current_quantity: safeNumeric(raw.current_quantity, 0),
+    item_id: Number.isFinite(itemId) ? itemId : safeNumeric(raw.item_id, 0),
+    menu_name: String(raw.menu_name ?? raw.name ?? ''),
+    category: String(raw.category ?? ''),
+    ingredient_id: Number.isFinite(ingId) ? ingId : safeNumeric(raw.inventory_ingredient_id, 0),
+    current_quantity: safeNumeric(raw.available_units, 0),
     unit_of_measure: normalizeUnit(raw.unit_of_measure),
     low_stock: safeNumeric(raw.low_stock, 0),
   }
 }
 
 /**
- * Realtime UPDATE payloads are often partial (e.g. only current_quantity). Merge with the prior row
- * so unit_of_measure / low_stock / name do not disappear on partial payloads.
+ * Realtime UPDATE payloads on `inventory` — merge into the menu row that shares this ingredient_id.
  */
-function mergeUpdateIntoRow(prevRow, incoming) {
-  if (!incoming) return prevRow
-  const base = prevRow ?? normalizeInventoryRow(incoming)
-  return normalizeInventoryRow({
-    ingredient_id: incoming.ingredient_id ?? base.ingredient_id,
-    name: incoming.name ?? base.name,
-    current_quantity: incoming.current_quantity ?? base.current_quantity,
-    unit_of_measure: incoming.unit_of_measure ?? base.unit_of_measure,
-    low_stock: incoming.low_stock ?? base.low_stock,
-  })
+function mergeInventoryPayloadIntoMenuRows(prev, invRow) {
+  if (!invRow) return prev
+  const invId = Number(invRow.ingredient_id)
+  if (!Number.isFinite(invId)) return prev
+  return sortByItemId(
+    prev.map((r) => {
+      if (r.ingredient_id !== invId) return r
+      return normalizeMenuInventoryRow({
+        item_id: r.item_id,
+        menu_name: r.menu_name,
+        category: r.category,
+        inventory_ingredient_id: invId,
+        available_units: invRow.current_quantity ?? r.current_quantity,
+        unit_of_measure: invRow.unit_of_measure ?? r.unit_of_measure,
+        low_stock: invRow.low_stock ?? r.low_stock,
+      })
+    }),
+  )
 }
 
-function sortById(rows) {
-  return [...rows].sort((a, b) => a.ingredient_id - b.ingredient_id)
+function sortByItemId(rows) {
+  return [...rows].sort((a, b) => a.item_id - b.item_id)
 }
 
-/** Skeleton slots on first load — matches your current 4-row inventory; increase if needed. */
-const INVENTORY_CARD_SLOTS = 4
+/** Skeleton slots on first load — matches eight demo menu lines. */
+const INVENTORY_CARD_SLOTS = 8
 
 const inventoryCardGridClass =
   'grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 md:gap-3 lg:gap-4'
@@ -89,26 +113,6 @@ async function insertInventoryTransactionRow(supabase, { ingredient_id, actualDe
   return error
 }
 
-function mergeRealtimeRows(prev, payload) {
-  const eventType = payload.eventType
-  if (eventType === 'INSERT' && payload.new) {
-    const row = normalizeInventoryRow(payload.new)
-    const without = prev.filter((r) => r.ingredient_id !== row.ingredient_id)
-    return sortById([...without, row])
-  }
-  if (eventType === 'UPDATE' && payload.new) {
-    const id = Number(payload.new.ingredient_id)
-    const prevRow = prev.find((r) => r.ingredient_id === id)
-    const row = mergeUpdateIntoRow(prevRow, payload.new)
-    return sortById(prev.map((r) => (r.ingredient_id === row.ingredient_id ? row : r)))
-  }
-  if (eventType === 'DELETE' && payload.old) {
-    const id = Number(payload.old.ingredient_id)
-    return prev.filter((r) => r.ingredient_id !== id)
-  }
-  return prev
-}
-
 function parsePositiveAmount(raw) {
   if (raw === undefined || raw === '') return 1
   const n = Number(raw)
@@ -117,7 +121,7 @@ function parsePositiveAmount(raw) {
 }
 
 export default function InventoryDashboard() {
-  /** @type {[InventoryRow[], React.Dispatch<React.SetStateAction<InventoryRow[]>>]} */
+  /** @type {[MenuInventoryRow[], React.Dispatch<React.SetStateAction<MenuInventoryRow[]>>]} */
   const [rows, setRows] = useState([])
   const configured = supabaseConfigured()
   const [loading, setLoading] = useState(configured)
@@ -134,13 +138,13 @@ export default function InventoryDashboard() {
   const refreshFromServer = useCallback(async () => {
     if (!supabase) return
     setFetchError(null)
-    const { data, error } = await supabase.from('inventory').select('*').order('ingredient_id')
+    const { data, error } = await supabase.rpc('get_menu_for_pos')
     if (error) {
       setFetchError(error.message)
       setRows([])
       return
     }
-    setRows(sortById((data ?? []).map(normalizeInventoryRow)))
+    setRows(sortByItemId(parseRpcJsonArray(data).map(normalizeMenuInventoryRow)))
   }, [])
 
   /** Stock In / Out: update `inventory`, then insert `inventory_transactions` (see ERD: quantity_change). */
@@ -186,7 +190,7 @@ export default function InventoryDashboard() {
 
       // Reflect quantity change immediately in UI (realtime events can lag/miss).
       setRows((prev) =>
-        sortById(
+        sortByItemId(
           prev.map((r) =>
             r.ingredient_id === row.ingredient_id
               ? { ...r, current_quantity: newQty }
@@ -227,13 +231,13 @@ export default function InventoryDashboard() {
       setLoading(true)
       setFetchError(null)
       try {
-        const { data, error } = await supabase.from('inventory').select('*').order('ingredient_id')
+        const { data, error } = await supabase.rpc('get_menu_for_pos')
         if (cancelled) return
         if (error) {
           setFetchError(error.message)
           setRows([])
         } else {
-          setRows(sortById((data ?? []).map(normalizeInventoryRow)))
+          setRows(sortByItemId(parseRpcJsonArray(data).map(normalizeMenuInventoryRow)))
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -246,7 +250,14 @@ export default function InventoryDashboard() {
         'postgres_changes',
         { event: '*', schema: 'public', table: 'inventory' },
         (payload) => {
-          setRows((prev) => mergeRealtimeRows(prev, payload))
+          const t = payload.eventType
+          if (t === 'INSERT' || t === 'DELETE') {
+            void refreshFromServer()
+            return
+          }
+          if (t === 'UPDATE' && payload.new) {
+            setRows((prev) => mergeInventoryPayloadIntoMenuRows(prev, payload.new))
+          }
         },
       )
       .subscribe((status, err) => {
@@ -262,12 +273,13 @@ export default function InventoryDashboard() {
       supabase.removeChannel(channel)
       setRealtimeStatus('idle')
     }
-  }, [configured])
+  }, [configured, refreshFromServer])
 
   return (
     <main className="max-w-7xl mx-auto px-4 py-8 sm:py-10">
       <p className="text-center text-[10px] uppercase tracking-widest text-gray-500 mb-2">
-        Live data — updates <code className="text-[9px] bg-gray-100 px-1 rounded">inventory</code>, logs{' '}
+        Live data — loads menu stock via <code className="text-[9px] bg-gray-100 px-1 rounded">get_menu_for_pos</code> (admin), updates{' '}
+        <code className="text-[9px] bg-gray-100 px-1 rounded">inventory</code>, logs{' '}
         <code className="text-[9px] bg-gray-100 px-1 rounded">inventory_transactions</code> (Realtime on inventory)
       </p>
       <div className="flex flex-wrap items-center justify-center gap-3 mb-6">
@@ -315,8 +327,8 @@ export default function InventoryDashboard() {
         <div className="text-center text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-6 space-y-2">
           <p>{fetchError}</p>
           <p className="text-xs text-gray-600">
-            Ensure RLS allows <code className="bg-white px-1 rounded">SELECT</code> on <code className="bg-white px-1 rounded">inventory</code>, plus{' '}
-            <code className="bg-white px-1 rounded">UPDATE</code> on inventory and <code className="bg-white px-1 rounded">INSERT</code> on{' '}
+            Ensure your user is <code className="bg-white px-1 rounded">admin</code> in <code className="bg-white px-1 rounded">user_roles</code> so <code className="bg-white px-1 rounded">get_menu_for_pos</code> runs, plus{' '}
+            <code className="bg-white px-1 rounded">UPDATE</code> on <code className="bg-white px-1 rounded">inventory</code> and <code className="bg-white px-1 rounded">INSERT</code> on{' '}
             <code className="bg-white px-1 rounded">inventory_transactions</code> for Stock In/Out.
           </p>
           <button
@@ -342,17 +354,17 @@ export default function InventoryDashboard() {
 
       {loading && !(configured && rows.length === 0 && !fetchError) && (
         <p className="text-center text-gray-500 text-sm mb-6" aria-live="polite">
-          Loading inventory…
+          Loading menu availability…
         </p>
       )}
 
       {loading && configured && rows.length === 0 && !fetchError && (
-        <section className="mb-12" aria-busy="true" aria-label="Loading ingredient cards">
+        <section className="mb-12" aria-busy="true" aria-label="Loading menu availability cards">
           <h3 className="text-sm font-bold text-gray-600 mb-2 inline-flex flex-wrap items-center gap-2 rounded-full bg-white border border-gray-200 px-3 py-1">
-            Inventory
+            Menu availability
             <span className="font-normal text-gray-400 normal-case">{INVENTORY_CARD_SLOTS} slots</span>
           </h3>
-          <p className="text-xs text-gray-500 mb-4">Fetching rows — placeholder boxes match your current four ingredient_ids.</p>
+          <p className="text-xs text-gray-500 mb-4">Fetching menu-linked stock rows…</p>
           <div className={inventoryCardGridClass}>
             {Array.from({ length: INVENTORY_CARD_SLOTS }, (_, i) => (
               <div
@@ -382,20 +394,19 @@ export default function InventoryDashboard() {
 
       {!loading && configured && rows.length === 0 && !fetchError && (
         <div className="rounded-2xl border-2 border-dashed border-gray-300 bg-white/80 px-6 py-10 text-center text-gray-600 mb-8">
-          <p className="font-semibold text-gray-800 mb-2">No ingredient rows returned</p>
+          <p className="font-semibold text-gray-800 mb-2">No menu inventory rows returned</p>
           <p className="text-sm max-w-md mx-auto">
-            Supabase returned an empty list. Add rows in the <code className="text-xs bg-gray-100 px-1 rounded">inventory</code> table or check Row Level Security allows{' '}
-            <code className="text-xs bg-gray-100 px-1 rounded">SELECT</code> for your anon key.
+            Link <code className="text-xs bg-gray-100 px-1 rounded">menu.inventory_ingredient_id</code> to <code className="text-xs bg-gray-100 px-1 rounded">inventory</code>, and confirm your account has the admin role for <code className="text-xs bg-gray-100 px-1 rounded">get_menu_for_pos</code>.
           </p>
         </div>
       )}
 
       {rows.length > 0 && (
-        <section className="mb-12" aria-label="Ingredient cards">
+        <section className="mb-12" aria-label="Menu availability cards">
           <h3 className="text-sm font-bold text-gray-600 mb-4 inline-flex flex-wrap items-center gap-2 rounded-full bg-white border border-gray-200 px-3 py-1">
-            Inventory
+            Menu availability
             <span className="font-normal text-gray-400 normal-case">
-              {rows.length} ingredient box{rows.length !== 1 ? 'es' : ''}
+              {rows.length} menu item{rows.length !== 1 ? 's' : ''}
             </span>
           </h3>
           <div className={inventoryCardGridClass}>
@@ -407,15 +418,15 @@ export default function InventoryDashboard() {
 
               return (
                 <article
-                  key={row.ingredient_id}
+                  key={row.item_id}
                   className="bg-white rounded-2xl border border-gray-200 p-4 shadow-sm flex flex-col gap-4 min-h-[280px]"
                 >
                   <div
                     className="relative aspect-[5/4] min-h-[11rem] rounded-xl bg-gradient-to-b from-[#EDE8E0] to-[#DDD5CA] ring-2 ring-dashed ring-[#C4B8A8] shadow-inner overflow-hidden"
-                    aria-label={`Image placeholder for ingredient ${row.ingredient_id}`}
+                    aria-label={`Image placeholder for ${row.menu_name}`}
                   >
-                    <span className="absolute top-2 left-2 font-mono text-[10px] font-semibold text-stone-600 bg-white/90 px-1.5 py-0.5 rounded border border-stone-200">
-                      ingredient_id: {row.ingredient_id}
+                    <span className="absolute top-2 left-2 font-mono text-[10px] font-semibold text-stone-600 bg-white/90 px-1.5 py-0.5 rounded border border-stone-200 max-w-[90%] truncate">
+                      {row.category}
                     </span>
                     {(low || negative) && (
                       <span
@@ -437,24 +448,25 @@ export default function InventoryDashboard() {
                         <circle cx="22" cy="22" r="4" strokeWidth="2" />
                       </svg>
                       <span className="text-[11px] font-bold uppercase tracking-wide text-stone-500">
-                        Ingredient photo
+                        Menu item photo
                       </span>
                       <span className="text-[10px] text-stone-500 leading-tight">
                         Slot for image URL / upload
                         <br />
-                        ({row.name})
+                        ({row.menu_name})
                       </span>
                     </div>
                   </div>
 
                   <div>
-                    <p className="font-bold text-gray-900 leading-tight text-base">{row.name}</p>
+                    <p className="font-bold text-gray-900 leading-tight text-base">{row.menu_name}</p>
+                    <p className="text-[10px] text-gray-500 mt-0.5">Stock row adjusts servings for this menu item.</p>
                   </div>
 
                   <div className="grid grid-cols-3 gap-2">
                     <div className="rounded-lg border border-gray-200 bg-[#FAF8F5] px-2 py-2 text-center shadow-sm">
                       <p className="text-[9px] font-bold uppercase tracking-wider text-gray-500 leading-tight">
-                        current_quantity
+                        available
                       </p>
                       <p
                         className={`mt-1 text-xl font-bold tabular-nums ${negative ? 'text-red-700' : 'text-gray-900'}`}

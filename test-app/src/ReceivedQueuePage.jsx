@@ -1,37 +1,23 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase, supabaseConfigured } from './lib/supabaseClient.js'
 
-function parseRpcJsonArray(data) {
-  if (data == null) return []
-  if (Array.isArray(data)) return data
-  if (typeof data === 'string') {
-    try {
-      const p = JSON.parse(data)
-      return Array.isArray(p) ? p : []
-    } catch {
-      return []
-    }
-  }
-  return []
-}
-
-export default function QueuePage({ onNewOrder, onOpenReceived, refreshKey = 0 }) {
+export default function ReceivedQueuePage({ onBackToPending }) {
   const configured = supabaseConfigured()
   const [orders, setOrders] = useState(/** @type {any[]} */ ([]))
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(/** @type {string | null} */ (null))
-  const [busyOrderId, setBusyOrderId] = useState(/** @type {number | null} */ (null))
 
   const load = useCallback(async () => {
     if (!supabase) return
     setError(null)
-    const { data, error: rpcErr } = await supabase.rpc('list_pending_orders_with_items')
+    const { data, error: rpcErr } = await supabase.rpc('list_received_orders_with_items')
     if (rpcErr) {
       setError(rpcErr.message)
       setOrders([])
       return
     }
-    setOrders(parseRpcJsonArray(data))
+    const parsed = Array.isArray(data) ? data : typeof data === 'string' ? JSON.parse(data) : data ?? []
+    setOrders(Array.isArray(parsed) ? parsed : [])
   }, [])
 
   useEffect(() => {
@@ -48,63 +34,41 @@ export default function QueuePage({ onNewOrder, onOpenReceived, refreshKey = 0 }
     return () => {
       cancelled = true
     }
-  }, [configured, load, refreshKey])
-
-  async function handleReceived(orderId) {
-    if (!supabase) return
-    setBusyOrderId(orderId)
-    setError(null)
-    const { error: rpcErr } = await supabase.rpc('mark_order_received', { p_order_id: orderId })
-    setBusyOrderId(null)
-    if (rpcErr) {
-      setError(rpcErr.message)
-      return
-    }
-    await load()
-  }
+  }, [configured, load])
 
   return (
     <main className="min-h-screen bg-[#FDFBF4] py-10 px-4 font-sans text-gray-700">
       <div className="max-w-6xl mx-auto">
-        <header className="text-center mb-16">
+        <header className="text-center mb-12">
           <h1 className="text-6xl md:text-7xl font-bold text-gray-500/80 leading-tight">
-            Admin Dashboard <br /> Queue
+            Admin Dashboard <br /> Received Orders
           </h1>
         </header>
 
-        <div className="mb-10 flex flex-wrap items-center justify-between gap-4 px-2">
+        <div className="mb-8 flex flex-wrap items-center justify-between gap-4 px-2">
           <button
             type="button"
-            onClick={() => onNewOrder?.()}
-            className="inline-flex items-center rounded-full bg-[#D98C5F] px-6 py-3 text-sm font-bold text-white shadow-sm transition hover:opacity-90"
+            onClick={() => onBackToPending?.()}
+            className="inline-flex items-center rounded-full border border-gray-400/40 bg-white px-6 py-3 text-sm font-bold text-gray-700 shadow-sm transition hover:bg-gray-50"
           >
-            + New Order
+            ← Back to pending queue
           </button>
-          <div className="flex flex-wrap items-center gap-3">
-            <button
-              type="button"
-              onClick={() => {
-                setLoading(true)
-                load().finally(() => setLoading(false))
-              }}
-              className="text-sm font-bold text-[#D98C5F] underline disabled:opacity-50"
-              disabled={loading || !configured}
-            >
-              Refresh
-            </button>
-            <button
-              type="button"
-              onClick={() => onOpenReceived?.()}
-              className="inline-flex items-center rounded-full border border-gray-400/40 bg-white px-5 py-2.5 text-sm font-bold text-gray-700 shadow-sm transition hover:bg-gray-50"
-            >
-              View received orders →
-            </button>
-          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setLoading(true)
+              load().finally(() => setLoading(false))
+            }}
+            className="text-sm font-bold text-[#D98C5F] underline disabled:opacity-50"
+            disabled={loading || !configured}
+          >
+            Refresh
+          </button>
         </div>
 
         {!configured && (
-          <p className="text-center text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-6">
-            Configure Supabase to load the order queue.
+          <p className="text-center text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+            Configure Supabase URL and anon key to load received orders.
           </p>
         )}
 
@@ -114,15 +78,13 @@ export default function QueuePage({ onNewOrder, onOpenReceived, refreshKey = 0 }
           </p>
         )}
 
-        {loading && <p className="text-center text-gray-500 text-sm mb-6">Loading queue…</p>}
+        {loading && <p className="text-center text-gray-500 text-sm">Loading…</p>}
 
         {!loading && !error && orders.length === 0 && (
-          <p className="text-center text-gray-600 text-sm mb-8">
-            No pending orders. Confirm an order from New Order to see it here.
-          </p>
+          <p className="text-center text-gray-600 text-sm">No received orders yet.</p>
         )}
 
-        <div className="space-y-12">
+        <div className="space-y-12 mt-6">
           {orders.map((order) => (
             <section key={order.order_id} className="relative">
               <div className="flex flex-wrap items-center gap-4 mb-4 px-2">
@@ -131,23 +93,10 @@ export default function QueuePage({ onNewOrder, onOpenReceived, refreshKey = 0 }
                     Order #{String(order.order_id).padStart(3, '0')}
                   </span>
                 </div>
-                <span
-                  className="rounded-full bg-amber-100 text-amber-950 border border-amber-300/60 px-4 py-1 text-xs font-extrabold uppercase tracking-wide"
-                  title="New orders are pending until marked received"
-                >
-                  Pending
+                <span className="rounded-full bg-emerald-100 text-emerald-900 border border-emerald-300/60 px-4 py-1 text-xs font-extrabold uppercase tracking-wide">
+                  Received
                 </span>
-                <h2 className="text-3xl md:text-4xl font-bold text-gray-700 flex-1 min-w-[12rem]">
-                  {order.customer_display}
-                </h2>
-                <button
-                  type="button"
-                  onClick={() => void handleReceived(order.order_id)}
-                  disabled={busyOrderId === order.order_id || !configured}
-                  className="shrink-0 rounded-full bg-[#3B2F2A] px-6 py-2.5 text-sm font-extrabold text-white shadow-sm transition hover:opacity-90 disabled:opacity-50"
-                >
-                  {busyOrderId === order.order_id ? '…' : 'Received'}
-                </button>
+                <h2 className="text-3xl md:text-4xl font-bold text-gray-700">{order.customer_display}</h2>
               </div>
 
               <div className="bg-white border-2 border-[#D98C5F]/40 rounded-[2.5rem] p-6 shadow-sm overflow-x-auto">
