@@ -89,6 +89,19 @@ async function insertInventoryTransactionRow(supabase, { ingredient_id, actualDe
   return error
 }
 
+async function insertExpenseRow(supabase, { ingredientName, amount, cashier_id }) {
+  const expenseRow = {
+    expense_name: `Inventory stock in: ${ingredientName}`,
+    amount,
+    category: 'Inventory',
+    cashier_id,
+    notes: 'Created from Inventory Stock In',
+  }
+
+  const { error } = await supabase.from('expenses').insert(expenseRow)
+  return error
+}
+
 function mergeRealtimeRows(prev, payload) {
   const eventType = payload.eventType
   if (eventType === 'INSERT' && payload.new) {
@@ -116,6 +129,13 @@ function parsePositiveAmount(raw) {
   return n
 }
 
+function parseOptionalCost(raw) {
+  if (raw === undefined || raw === '') return 0
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0) return NaN
+  return n
+}
+
 export default function InventoryDashboard() {
   /** @type {[InventoryRow[], React.Dispatch<React.SetStateAction<InventoryRow[]>>]} */
   const [rows, setRows] = useState([])
@@ -125,6 +145,8 @@ export default function InventoryDashboard() {
   const [realtimeStatus, setRealtimeStatus] = useState(/** @type {'idle' | 'subscribed' | 'error'} */ ('idle'))
   /** Quantity to add/remove per row (string for controlled inputs) */
   const [qtyInputs, setQtyInputs] = useState(/** @type {Record<number, string>} */ ({}))
+  /** Total peso cost for a Stock In purchase. Saved to expenses.amount. */
+  const [costInputs, setCostInputs] = useState(/** @type {Record<number, string>} */ ({}))
   const [busyIngredientId, setBusyIngredientId] = useState(/** @type {number | null} */ (null))
   const [actionError, setActionError] = useState(/** @type {string | null} */ (null))
 
@@ -150,6 +172,12 @@ export default function InventoryDashboard() {
       const amount = parsePositiveAmount(qtyInputs[row.ingredient_id])
       if (Number.isNaN(amount)) {
         setActionError('Enter a positive number for quantity.')
+        return
+      }
+
+      const stockInCost = mode === 'in' ? parseOptionalCost(costInputs[row.ingredient_id]) : 0
+      if (Number.isNaN(stockInCost)) {
+        setActionError('Enter a valid cost amount, or leave it blank.')
         return
       }
 
@@ -208,14 +236,33 @@ export default function InventoryDashboard() {
         )
         await refreshFromServer()
       } else {
-        setActionError(null)
+        let expenseErr = null
+        if (mode === 'in' && stockInCost > 0) {
+          expenseErr = await insertExpenseRow(supabase, {
+            ingredientName: row.name,
+            amount: stockInCost,
+            cashier_id: TX_CASHIER_ID,
+          })
+        }
+
+        if (expenseErr) {
+          setActionError(
+            `Quantity saved, but expense insert failed: ${expenseErr.message}. Check RLS INSERT on expenses and ensure VITE_TX_CASHIER_ID points to a valid cashier_id.`,
+          )
+        } else {
+          setActionError(null)
+          if (mode === 'in') {
+            setCostInputs((prev) => ({ ...prev, [row.ingredient_id]: '' }))
+          }
+        }
+
         // Keep local state in sync even when realtime isn't delivering updates.
         void refreshFromServer()
       }
 
       setBusyIngredientId(null)
     },
-    [qtyInputs, refreshFromServer],
+    [costInputs, qtyInputs, refreshFromServer],
   )
 
   useEffect(() => {
@@ -498,7 +545,7 @@ export default function InventoryDashboard() {
 
                   <div className="mt-auto flex flex-col gap-2 border-t border-gray-100 pt-3">
                     <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">
-                      Amount
+                      Quantity
                       <input
                         type="number"
                         min="0"
@@ -507,6 +554,21 @@ export default function InventoryDashboard() {
                         value={qtyInputs[row.ingredient_id] ?? ''}
                         onChange={(e) =>
                           setQtyInputs((prev) => ({ ...prev, [row.ingredient_id]: e.target.value }))
+                        }
+                        className="mt-1 w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-normal"
+                        disabled={busyIngredientId === row.ingredient_id}
+                      />
+                    </label>
+                    <label className="text-[10px] font-bold text-gray-500 uppercase tracking-wide">
+                      Stock In Cost
+                      <input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        placeholder="Optional total cost"
+                        value={costInputs[row.ingredient_id] ?? ''}
+                        onChange={(e) =>
+                          setCostInputs((prev) => ({ ...prev, [row.ingredient_id]: e.target.value }))
                         }
                         className="mt-1 w-full rounded-lg border border-gray-300 px-2 py-1.5 text-sm font-normal"
                         disabled={busyIngredientId === row.ingredient_id}
