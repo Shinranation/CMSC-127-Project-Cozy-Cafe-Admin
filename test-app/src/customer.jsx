@@ -1,76 +1,73 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase, supabaseConfigured } from './lib/supabaseClient.js'
 
-const CATEGORIES = [
-  'All',
-  'Rice Bowl Chicken Wings',
-  'French Fries',
-  'Others',
-  'Waffles',
-  'Soft Drinks',
-  'Korean Rice Bowls',
-  'Sandwiches',
-  'Silog Bowls',
-]
-
-function normalizeMenuItem(raw) {
-  return {
-    id: raw.item_id,
-    name: String(raw.name ?? ''),
-    description: String(raw.description ?? ''),
-    category: String(raw.category ?? ''),
-    price: Number(raw.price ?? 0),
-    availabilityStatus: String(raw.availability_status ?? ''),
-    imageUrl: '',
+function parseRpcJsonArray(data) {
+  if (data == null) return []
+  if (Array.isArray(data)) return data
+  if (typeof data === 'string') {
+    try {
+      const p = JSON.parse(data)
+      return Array.isArray(p) ? p : []
+    } catch {
+      return []
+    }
   }
+  return []
 }
 
 export default function Customer() {
   const configured = supabaseConfigured()
-  const [activeCategory, setActiveCategory] = useState('All')
-  const [itemsFromDb, setItemsFromDb] = useState([])
+  const [items, setItems] = useState([])
   const [loading, setLoading] = useState(configured)
   const [fetchError, setFetchError] = useState(null)
 
+  const loadMenu = useCallback(async () => {
+    if (!supabase) return
+    setFetchError(null)
+    const { data, error } = await supabase.rpc('get_menu_public')
+    if (error) {
+      setFetchError(error.message)
+      setItems([])
+      return
+    }
+    const raw = parseRpcJsonArray(data)
+    setItems(
+      raw
+        .map((r) => ({
+          id: Number(r.item_id),
+          name: String(r.name ?? ''),
+          description: String(r.description ?? ''),
+          category: String(r.category ?? ''),
+          price: Number(r.price),
+        }))
+        .filter((r) => Number.isFinite(r.id) && r.id > 0),
+    )
+  }, [])
+
   useEffect(() => {
     if (!configured || !supabase) return
-
     let cancelled = false
-
     void (async () => {
       setLoading(true)
-      setFetchError(null)
-
-      const { data, error } = await supabase
-        .from('menu')
-        .select('item_id,name,description,price,category,availability_status')
-        .order('item_id')
-
-      if (cancelled) return
-
-      if (error) {
-        setFetchError(error.message)
-        setItemsFromDb([])
-      } else {
-        setItemsFromDb(
-          (data ?? [])
-            .map(normalizeMenuItem)
-            .filter((item) => item.availabilityStatus.toLowerCase() === 'available'),
-        )
-      }
-
-      setLoading(false)
+      await loadMenu()
+      if (!cancelled) setLoading(false)
     })()
-
     return () => {
       cancelled = true
     }
-  }, [configured])
+  }, [configured, loadMenu])
+
+  const categories = useMemo(() => {
+    const fromDb = [...new Set(items.map((i) => i.category).filter(Boolean))].sort()
+    return ['All', ...fromDb]
+  }, [items])
+
+  const [activeCategory, setActiveCategory] = useState('All')
 
   const visibleItems = useMemo(() => {
-    if (activeCategory === 'All') return itemsFromDb
-    return itemsFromDb.filter((item) => item.category === activeCategory)
-  }, [activeCategory, itemsFromDb])
+    if (activeCategory === 'All') return items
+    return items.filter((item) => item.category === activeCategory)
+  }, [activeCategory, items])
 
   return (
     <div className="min-h-screen bg-[#F7F0E6] text-[#3B2F2A]">
@@ -83,19 +80,32 @@ export default function Customer() {
           <h3 className="mb-10 text-center text-5xl font-extrabold">Menu</h3>
 
           {!configured && (
-            <p className="mb-8 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-center text-sm text-red-700">
-              Missing Supabase configuration.
+            <p className="mb-8 text-center text-sm text-red-800 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+              Menu is unavailable: configure Supabase URL and anon key for this app.
             </p>
           )}
 
-          {fetchError && configured && (
-            <p className="mb-8 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-center text-sm text-red-700">
+          {fetchError && (
+            <p className="mb-8 text-center text-sm text-red-800 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
               {fetchError}
+              <button
+                type="button"
+                className="ml-2 text-xs font-bold underline text-[#D98C5F]"
+                onClick={() => void loadMenu()}
+              >
+                Retry
+              </button>
+            </p>
+          )}
+
+          {loading && configured && (
+            <p className="mb-8 text-center text-sm text-black/50" aria-live="polite">
+              Loading menu…
             </p>
           )}
 
           <div className="mx-auto mb-12 flex max-w-4xl flex-wrap justify-center gap-x-8 gap-y-5">
-            {CATEGORIES.map((cat) => {
+            {categories.map((cat) => {
               const isActive = activeCategory === cat
 
               return (
@@ -116,53 +126,34 @@ export default function Customer() {
             })}
           </div>
 
-          {loading && (
-            <p className="mb-8 text-center text-sm text-black/50" aria-live="polite">
-              Loading menu...
-            </p>
-          )}
-
           <div className="grid grid-cols-1 gap-10 sm:grid-cols-2 lg:grid-cols-3">
             {visibleItems.map((item) => (
               <article
                 key={item.id}
                 className="rounded-[28px] border-2 border-[#D98C5F] bg-white p-5"
               >
-                <div className="aspect-[4/3] w-full overflow-hidden rounded-xl border-2 border-black/40 bg-white">
-                  {item.imageUrl ? (
-                    <img
-                      src={item.imageUrl}
-                      alt={item.name}
-                      className="h-full w-full object-cover"
-                      loading="lazy"
-                    />
-                  ) : (
-                    <div className="flex h-full w-full items-center justify-center bg-white">
-                      <img
-                        src="https://via.placeholder.com/150"
-                        alt="No image available"
-                      />
-                    </div>
-                  )}
+                <div className="aspect-[4/3] w-full overflow-hidden rounded-xl border-2 border-black/40 bg-white relative">
+                  <div className="absolute inset-0 flex items-center justify-center opacity-15 pointer-events-none">
+                    <div className="absolute w-full h-[1px] bg-black rotate-45" />
+                    <div className="absolute w-full h-[1px] bg-black -rotate-45" />
+                  </div>
                 </div>
 
                 <div className="mt-4">
-                  <p className="text-xl font-extrabold leading-tight text-[#3B2F2A]">
-                    {item.name}
-                  </p>
-                  <p className="mt-1 text-sm text-black/55">{item.description}</p>
+                  <p className="text-xl font-extrabold leading-tight text-[#3B2F2A]">{item.name}</p>
+                  {item.description ? (
+                    <p className="mt-1 text-xs text-black/55 line-clamp-3">{item.description}</p>
+                  ) : null}
                   <p className="mt-2 text-lg font-extrabold text-[#D98C5F]">
-                    ₱{item.price.toFixed(2)}
+                    {Number.isFinite(item.price) ? `₱${item.price.toFixed(2)}` : '₱—'}
                   </p>
                 </div>
               </article>
             ))}
           </div>
 
-          {!loading && visibleItems.length === 0 && (
-            <p className="mt-10 text-center text-sm text-black/50">
-              No available menu items found in this category yet.
-            </p>
+          {!loading && !fetchError && configured && visibleItems.length === 0 && (
+            <p className="mt-10 text-center text-sm text-black/50">No items found in this category yet.</p>
           )}
         </section>
       </main>

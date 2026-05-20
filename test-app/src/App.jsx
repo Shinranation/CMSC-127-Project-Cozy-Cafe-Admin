@@ -3,15 +3,17 @@ import Customer from './customer.jsx'
 import InventoryDashboard from './InventoryDashboard.jsx'
 import RevenuePage from './RevenuePage.jsx'
 import QueuePage from './QueuePage.jsx'
+import ReceivedQueuePage from './ReceivedQueuePage.jsx'
 import NewOrder from './NewOrder.jsx'
 import Login from './Login.jsx'
 import Signup from './Signup.jsx'
 import { supabase } from './lib/supabaseClient.js'
 
-/** @typedef {'customer' | 'inventory' | 'revenue' | 'queue' | 'login' | 'signup'} AppPage */
+/** @typedef {'customer' | 'inventory' | 'revenue' | 'queue' | 'queueReceived' | 'newOrder' | 'login' | 'signup'} AppPage */
 
 export default function App() {
   const [page, setPage] = useState('customer')
+  const [queueRefreshKey, setQueueRefreshKey] = useState(0)
   const [session, setSession] = useState(null)
   const [adminSignedIn, setAdminSignedIn] = useState(false)
 
@@ -119,6 +121,13 @@ export default function App() {
               >
                 Queue
               </button>
+
+              <button
+                className={navBtn}
+                onClick={() => setPage('queueReceived')}
+              >
+                Received
+              </button>
             </>
           )}
 
@@ -151,11 +160,25 @@ export default function App() {
       {page === 'revenue' && adminSignedIn && <RevenuePage />}
 
       {page === 'queue' && adminSignedIn && (
-        <QueuePage onNewOrder={() => setPage('newOrder')} />
+        <QueuePage
+          refreshKey={queueRefreshKey}
+          onNewOrder={() => setPage('newOrder')}
+          onOpenReceived={() => setPage('queueReceived')}
+        />
+      )}
+
+      {page === 'queueReceived' && adminSignedIn && (
+        <ReceivedQueuePage onBackToPending={() => setPage('queue')} />
       )}
 
       {page === 'newOrder' && adminSignedIn && (
-        <NewOrder onBack={() => setPage('queue')} />
+        <NewOrder
+          onCancel={() => setPage('queue')}
+          onBack={() => {
+            setQueueRefreshKey((k) => k + 1)
+            setPage('queue')
+          }}
+        />
       )}
 
       {page === 'login' && (
