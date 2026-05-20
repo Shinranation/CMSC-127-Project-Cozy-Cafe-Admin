@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { supabase, supabaseConfigured } from './lib/supabaseClient.js'
 
 /** @typedef {{ ingredient_id: number, name: string, current_quantity: number, unit_of_measure: string, low_stock: number }} InventoryRow */
+/** @typedef {{ item_id: number, name: string, description: string, price: number, category: string, availability_status: string }} MenuRow */
 
 /** Avoid NaN when Postgres / Realtime sends null, blanks, or non-numeric strings. */
 function safeNumeric(raw, fallback = 0) {
@@ -27,6 +28,18 @@ function normalizeInventoryRow(raw) {
   }
 }
 
+function normalizeMenuRow(raw) {
+  const id = Number(raw.item_id)
+  return {
+    item_id: Number.isFinite(id) ? id : safeNumeric(raw.item_id, 0),
+    name: String(raw.name ?? ''),
+    description: String(raw.description ?? ''),
+    price: safeNumeric(raw.price, 0),
+    category: String(raw.category ?? ''),
+    availability_status: String(raw.availability_status ?? ''),
+  }
+}
+
 /**
  * Realtime UPDATE payloads are often partial (e.g. only current_quantity). Merge with the prior row
  * so unit_of_measure / low_stock / name do not disappear on partial payloads.
@@ -45,6 +58,10 @@ function mergeUpdateIntoRow(prevRow, incoming) {
 
 function sortById(rows) {
   return [...rows].sort((a, b) => a.ingredient_id - b.ingredient_id)
+}
+
+function sortMenuById(rows) {
+  return [...rows].sort((a, b) => a.item_id - b.item_id)
 }
 
 /** Skeleton slots on first load — matches your current 4-row inventory; increase if needed. */
@@ -136,9 +153,45 @@ function parseOptionalCost(raw) {
   return n
 }
 
+function parseNonNegativeAmount(raw, fallback = 0) {
+  if (raw === undefined || raw === '') return fallback
+  const n = Number(raw)
+  if (!Number.isFinite(n) || n < 0) return NaN
+  return n
+}
+
+const emptyNewIngredient = {
+  name: '',
+  current_quantity: '',
+  unit_of_measure: '',
+  low_stock: '',
+  total_cost: '',
+}
+
+const MENU_CATEGORIES = [
+  'Rice Bowl Chicken Wings',
+  'French Fries',
+  'Waffles',
+  'Soft Drinks',
+  'Korean Rice Bowls',
+  'Sandwiches',
+  'Silog Bowls',
+  'Others',
+]
+
+const emptyNewMenuItem = {
+  name: '',
+  description: '',
+  price: '',
+  category: MENU_CATEGORIES[0],
+  availability_status: 'available',
+}
+
 export default function InventoryDashboard() {
   /** @type {[InventoryRow[], React.Dispatch<React.SetStateAction<InventoryRow[]>>]} */
   const [rows, setRows] = useState([])
+  /** @type {[MenuRow[], React.Dispatch<React.SetStateAction<MenuRow[]>>]} */
+  const [menuRows, setMenuRows] = useState([])
   const configured = supabaseConfigured()
   const [loading, setLoading] = useState(configured)
   const [fetchError, setFetchError] = useState(/** @type {string | null} */ (null))
@@ -147,8 +200,14 @@ export default function InventoryDashboard() {
   const [qtyInputs, setQtyInputs] = useState(/** @type {Record<number, string>} */ ({}))
   /** Total peso cost for a Stock In purchase. Saved to expenses.amount. */
   const [costInputs, setCostInputs] = useState(/** @type {Record<number, string>} */ ({}))
+  const [addMode, setAddMode] = useState('ingredient')
+  const [newIngredient, setNewIngredient] = useState(emptyNewIngredient)
+  const [newMenuItem, setNewMenuItem] = useState(emptyNewMenuItem)
   const [busyIngredientId, setBusyIngredientId] = useState(/** @type {number | null} */ (null))
+  const [addingIngredient, setAddingIngredient] = useState(false)
+  const [addingMenuItem, setAddingMenuItem] = useState(false)
   const [actionError, setActionError] = useState(/** @type {string | null} */ (null))
+  const [actionMessage, setActionMessage] = useState(/** @type {string | null} */ (null))
 
   const missingEnvMessage =
     'Missing Supabase URL/key. Set SUPABASE_URL and SUPABASE_KEY (anon) or VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in the repo-root .env — see test-app/.env.example.'
@@ -165,24 +224,194 @@ export default function InventoryDashboard() {
     setRows(sortById((data ?? []).map(normalizeInventoryRow)))
   }, [])
 
+  const refreshMenuFromServer = useCallback(async () => {
+    if (!supabase) return
+    setFetchError(null)
+    const { data, error } = await supabase.from('menu').select('*').order('item_id')
+    if (error) {
+      setFetchError(error.message)
+      setMenuRows([])
+      return
+    }
+    setMenuRows(sortMenuById((data ?? []).map(normalizeMenuRow)))
+  }, [])
+
+  const handleNewIngredientChange = useCallback((field, value) => {
+    setNewIngredient((prev) => ({ ...prev, [field]: value }))
+  }, [])
+
+  const handleNewMenuItemChange = useCallback((field, value) => {
+    setNewMenuItem((prev) => ({ ...prev, [field]: value }))
+  }, [])
+
+  const handleAddIngredient = useCallback(async () => {
+    if (!supabase) return
+
+    const name = newIngredient.name.trim()
+    const unit = newIngredient.unit_of_measure.trim()
+    const quantity = parseNonNegativeAmount(newIngredient.current_quantity, 0)
+    const lowStock = parseNonNegativeAmount(newIngredient.low_stock, 0)
+    const totalCost = parseOptionalCost(newIngredient.total_cost)
+
+    setActionError(null)
+    setActionMessage(null)
+
+    if (!name) {
+      setActionError('Enter an ingredient name.')
+      return
+    }
+
+    if (!unit) {
+      setActionError('Enter a unit of measure.')
+      return
+    }
+
+    if (Number.isNaN(quantity) || Number.isNaN(lowStock)) {
+      setActionError('Quantity and low stock must be zero or higher.')
+      return
+    }
+
+    if (Number.isNaN(totalCost)) {
+      setActionError('Cost must be zero or higher, or left blank.')
+      return
+    }
+
+    setAddingIngredient(true)
+
+    const { data: inserted, error: insertErr } = await supabase
+      .from('inventory')
+      .insert({
+        name,
+        current_quantity: quantity,
+        unit_of_measure: unit,
+        low_stock: lowStock,
+      })
+      .select('*')
+      .single()
+
+    if (insertErr || !inserted) {
+      setActionError(insertErr?.message ?? 'Could not add ingredient.')
+      setAddingIngredient(false)
+      return
+    }
+
+    const row = normalizeInventoryRow(inserted)
+    setRows((prev) => sortById([...prev.filter((item) => item.ingredient_id !== row.ingredient_id), row]))
+
+    let followUpError = null
+
+    if (quantity > 0) {
+      followUpError = await insertInventoryTransactionRow(supabase, {
+        ingredient_id: row.ingredient_id,
+        actualDelta: quantity,
+        transaction_type: 'stock_in',
+        reason: 'Initial ingredient entry',
+      })
+    }
+
+    if (!followUpError && totalCost > 0) {
+      followUpError = await insertExpenseRow(supabase, {
+        ingredientName: name,
+        amount: totalCost,
+        cashier_id: TX_CASHIER_ID,
+      })
+    }
+
+    if (followUpError) {
+      setActionError(
+        `Ingredient added, but extra logging failed: ${followUpError.message}. Check INSERT permissions for inventory_transactions/expenses and VITE_TX_CASHIER_ID.`,
+      )
+    } else {
+      setActionMessage(`${name} added to inventory.`)
+      setNewIngredient(emptyNewIngredient)
+    }
+
+    await refreshFromServer()
+    setAddingIngredient(false)
+  }, [newIngredient, refreshFromServer])
+
+  const handleAddMenuItem = useCallback(async () => {
+    if (!supabase) return
+
+    const name = newMenuItem.name.trim()
+    const description = newMenuItem.description.trim()
+    const price = Number(newMenuItem.price)
+    const category = newMenuItem.category.trim()
+    const availability = newMenuItem.availability_status.trim()
+
+    setActionError(null)
+    setActionMessage(null)
+
+    if (!name) {
+      setActionError('Enter a menu item name.')
+      return
+    }
+
+    if (!description) {
+      setActionError('Enter a menu item description.')
+      return
+    }
+
+    if (!Number.isFinite(price) || price <= 0) {
+      setActionError('Enter a menu item price greater than zero.')
+      return
+    }
+
+    if (!category || !availability) {
+      setActionError('Choose a category and availability status.')
+      return
+    }
+
+    setAddingMenuItem(true)
+
+    const { data: inserted, error } = await supabase
+      .from('menu')
+      .insert({
+        name,
+        description,
+        price,
+        category,
+        availability_status: availability,
+        inventory_ingredient_id: null,
+      })
+      .select('*')
+      .single()
+
+    if (error) {
+      setActionError(error.message)
+    } else {
+      if (inserted) {
+        const row = normalizeMenuRow(inserted)
+        setMenuRows((prev) => sortMenuById([...prev.filter((item) => item.item_id !== row.item_id), row]))
+      }
+      setActionMessage(`${name} added to menu.`)
+      setNewMenuItem(emptyNewMenuItem)
+    }
+
+    setAddingMenuItem(false)
+  }, [newMenuItem])
+
   /** Stock In / Out: update `inventory`, then insert `inventory_transactions` (see ERD: quantity_change). */
   const applyStockMovement = useCallback(
     async (row, mode) => {
       if (!supabase) return
       const amount = parsePositiveAmount(qtyInputs[row.ingredient_id])
       if (Number.isNaN(amount)) {
+        setActionMessage(null)
         setActionError('Enter a positive number for quantity.')
         return
       }
 
       const stockInCost = mode === 'in' ? parseOptionalCost(costInputs[row.ingredient_id]) : 0
       if (Number.isNaN(stockInCost)) {
+        setActionMessage(null)
         setActionError('Enter a valid cost amount, or leave it blank.')
         return
       }
 
       const signedDelta = mode === 'in' ? amount : -amount
       setActionError(null)
+      setActionMessage(null)
       setBusyIngredientId(row.ingredient_id)
 
       const { data: fresh, error: readErr } = await supabase
@@ -251,6 +480,7 @@ export default function InventoryDashboard() {
           )
         } else {
           setActionError(null)
+          setActionMessage(`${row.name} inventory updated.`)
           if (mode === 'in') {
             setCostInputs((prev) => ({ ...prev, [row.ingredient_id]: '' }))
           }
@@ -274,13 +504,19 @@ export default function InventoryDashboard() {
       setLoading(true)
       setFetchError(null)
       try {
-        const { data, error } = await supabase.from('inventory').select('*').order('ingredient_id')
+        const [inventoryResult, menuResult] = await Promise.all([
+          supabase.from('inventory').select('*').order('ingredient_id'),
+          supabase.from('menu').select('*').order('item_id'),
+        ])
         if (cancelled) return
-        if (error) {
-          setFetchError(error.message)
+
+        if (inventoryResult.error || menuResult.error) {
+          setFetchError(inventoryResult.error?.message ?? menuResult.error?.message ?? 'Could not load dashboard data.')
           setRows([])
+          setMenuRows([])
         } else {
-          setRows(sortById((data ?? []).map(normalizeInventoryRow)))
+          setRows(sortById((inventoryResult.data ?? []).map(normalizeInventoryRow)))
+          setMenuRows(sortMenuById((menuResult.data ?? []).map(normalizeMenuRow)))
         }
       } finally {
         if (!cancelled) setLoading(false)
@@ -358,6 +594,15 @@ export default function InventoryDashboard() {
         </div>
       )}
 
+      {actionMessage && configured && (
+        <div
+          className="text-center text-sm text-emerald-900 bg-emerald-50 border border-emerald-200 rounded-xl px-4 py-3 mb-6"
+          role="status"
+        >
+          {actionMessage}
+        </div>
+      )}
+
       {fetchError && configured && (
         <div className="text-center text-sm text-red-700 bg-red-50 border border-red-200 rounded-xl px-4 py-3 mb-6 space-y-2">
           <p>{fetchError}</p>
@@ -370,7 +615,7 @@ export default function InventoryDashboard() {
             type="button"
             onClick={() => {
               setLoading(true)
-              refreshFromServer().finally(() => setLoading(false))
+              Promise.all([refreshFromServer(), refreshMenuFromServer()]).finally(() => setLoading(false))
             }}
             className="text-xs font-bold underline text-[#D98C5F]"
           >
@@ -393,7 +638,196 @@ export default function InventoryDashboard() {
         </p>
       )}
 
-      {loading && configured && rows.length === 0 && !fetchError && (
+      <section className="mb-8 rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
+        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <h3 className="text-lg font-bold text-gray-800">Add Record</h3>
+            <p className="text-xs text-gray-500">
+              Ingredients go to inventory. Menu items go to menu.
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 overflow-hidden rounded-full border border-gray-300 bg-gray-50 p-1 text-xs font-bold">
+            <button
+              type="button"
+              onClick={() => setAddMode('ingredient')}
+              className={`rounded-full px-4 py-2 transition ${
+                addMode === 'ingredient' ? 'bg-[#D98C5F] text-white shadow-sm' : 'text-gray-600'
+              }`}
+            >
+              Ingredient
+            </button>
+            <button
+              type="button"
+              onClick={() => setAddMode('menu')}
+              className={`rounded-full px-4 py-2 transition ${
+                addMode === 'menu' ? 'bg-[#D98C5F] text-white shadow-sm' : 'text-gray-600'
+              }`}
+            >
+              Menu Item
+            </button>
+          </div>
+        </div>
+
+        {addMode === 'ingredient' ? (
+          <div className="grid gap-3 md:grid-cols-[1.4fr_0.8fr_0.8fr_0.8fr_0.8fr_auto]">
+            <label className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+              Ingredient
+              <input
+                type="text"
+                value={newIngredient.name}
+                onChange={(e) => handleNewIngredientChange('name', e.target.value)}
+                placeholder="Flour"
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-normal"
+                disabled={addingIngredient || !configured}
+              />
+            </label>
+
+            <label className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+              Amount
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={newIngredient.current_quantity}
+                onChange={(e) => handleNewIngredientChange('current_quantity', e.target.value)}
+                placeholder="10"
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-normal"
+                disabled={addingIngredient || !configured}
+              />
+            </label>
+
+            <label className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+              Unit
+              <input
+                type="text"
+                value={newIngredient.unit_of_measure}
+                onChange={(e) => handleNewIngredientChange('unit_of_measure', e.target.value)}
+                placeholder="kg"
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-normal"
+                disabled={addingIngredient || !configured}
+              />
+            </label>
+
+            <label className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+              Low Stock
+              <input
+                type="number"
+                min="0"
+                step="any"
+                value={newIngredient.low_stock}
+                onChange={(e) => handleNewIngredientChange('low_stock', e.target.value)}
+                placeholder="2"
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-normal"
+                disabled={addingIngredient || !configured}
+              />
+            </label>
+
+            <label className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+              Cost
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={newIngredient.total_cost}
+                onChange={(e) => handleNewIngredientChange('total_cost', e.target.value)}
+                placeholder="150.00"
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-normal"
+                disabled={addingIngredient || !configured}
+              />
+            </label>
+
+            <button
+              type="button"
+              onClick={handleAddIngredient}
+              disabled={addingIngredient || !configured}
+              className="self-end rounded-full bg-[#D98C5F] px-5 py-2.5 text-sm font-bold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {addingIngredient ? 'Adding...' : 'Add Ingredient'}
+            </button>
+          </div>
+        ) : (
+          <div className="grid gap-3 md:grid-cols-[1.2fr_1.5fr_0.7fr_1fr_0.8fr_auto]">
+            <label className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+              Menu Item
+              <input
+                type="text"
+                value={newMenuItem.name}
+                onChange={(e) => handleNewMenuItemChange('name', e.target.value)}
+                placeholder="Chicken Teriyaki"
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-normal"
+                disabled={addingMenuItem || !configured}
+              />
+            </label>
+
+            <label className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+              Description
+              <input
+                type="text"
+                value={newMenuItem.description}
+                onChange={(e) => handleNewMenuItemChange('description', e.target.value)}
+                placeholder="Rice bowl with teriyaki chicken"
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-normal"
+                disabled={addingMenuItem || !configured}
+              />
+            </label>
+
+            <label className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+              Price
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={newMenuItem.price}
+                onChange={(e) => handleNewMenuItemChange('price', e.target.value)}
+                placeholder="99.00"
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-normal"
+                disabled={addingMenuItem || !configured}
+              />
+            </label>
+
+            <label className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+              Category
+              <select
+                value={newMenuItem.category}
+                onChange={(e) => handleNewMenuItemChange('category', e.target.value)}
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-normal"
+                disabled={addingMenuItem || !configured}
+              >
+                {MENU_CATEGORIES.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            <label className="text-[10px] font-bold uppercase tracking-wide text-gray-500">
+              Status
+              <select
+                value={newMenuItem.availability_status}
+                onChange={(e) => handleNewMenuItemChange('availability_status', e.target.value)}
+                className="mt-1 w-full rounded-lg border border-gray-300 px-3 py-2 text-sm font-normal"
+                disabled={addingMenuItem || !configured}
+              >
+                <option value="available">available</option>
+                <option value="unavailable">unavailable</option>
+              </select>
+            </label>
+
+            <button
+              type="button"
+              onClick={handleAddMenuItem}
+              disabled={addingMenuItem || !configured}
+              className="self-end rounded-full bg-[#D98C5F] px-5 py-2.5 text-sm font-bold text-white transition hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {addingMenuItem ? 'Adding...' : 'Add Menu'}
+            </button>
+          </div>
+        )}
+      </section>
+
+      {loading && configured && addMode === 'ingredient' && rows.length === 0 && !fetchError && (
         <section className="mb-12" aria-busy="true" aria-label="Loading ingredient cards">
           <h3 className="text-sm font-bold text-gray-600 mb-2 inline-flex flex-wrap items-center gap-2 rounded-full bg-white border border-gray-200 px-3 py-1">
             Inventory
@@ -427,7 +861,7 @@ export default function InventoryDashboard() {
         </section>
       )}
 
-      {!loading && configured && rows.length === 0 && !fetchError && (
+      {!loading && configured && addMode === 'ingredient' && rows.length === 0 && !fetchError && (
         <div className="rounded-2xl border-2 border-dashed border-gray-300 bg-white/80 px-6 py-10 text-center text-gray-600 mb-8">
           <p className="font-semibold text-gray-800 mb-2">No ingredient rows returned</p>
           <p className="text-sm max-w-md mx-auto">
@@ -437,7 +871,7 @@ export default function InventoryDashboard() {
         </div>
       )}
 
-      {rows.length > 0 && (
+      {addMode === 'ingredient' && rows.length > 0 && (
         <section className="mb-12" aria-label="Ingredient cards">
           <h3 className="text-sm font-bold text-gray-600 mb-4 inline-flex flex-wrap items-center gap-2 rounded-full bg-white border border-gray-200 px-3 py-1">
             Inventory
@@ -591,6 +1025,81 @@ export default function InventoryDashboard() {
                       >
                         {busyIngredientId === row.ingredient_id ? '…' : 'Stock Out'}
                       </button>
+                    </div>
+                  </div>
+                </article>
+              )
+            })}
+          </div>
+        </section>
+      )}
+
+      {!loading && configured && addMode === 'menu' && menuRows.length === 0 && !fetchError && (
+        <div className="rounded-2xl border-2 border-dashed border-gray-300 bg-white/80 px-6 py-10 text-center text-gray-600 mb-8">
+          <p className="font-semibold text-gray-800 mb-2">No menu items returned</p>
+          <p className="text-sm max-w-md mx-auto">
+            Add sellable products in the Menu Item tab, or check Row Level Security allows{' '}
+            <code className="text-xs bg-gray-100 px-1 rounded">SELECT</code> on{' '}
+            <code className="text-xs bg-gray-100 px-1 rounded">menu</code>.
+          </p>
+        </div>
+      )}
+
+      {addMode === 'menu' && menuRows.length > 0 && (
+        <section className="mb-12" aria-label="Menu item cards">
+          <h3 className="text-sm font-bold text-gray-600 mb-4 inline-flex flex-wrap items-center gap-2 rounded-full bg-white border border-gray-200 px-3 py-1">
+            Menu Items
+            <span className="font-normal text-gray-400 normal-case">
+              {menuRows.length} item{menuRows.length !== 1 ? 's' : ''}
+            </span>
+          </h3>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {menuRows.map((item) => {
+              const available = item.availability_status.toLowerCase() === 'available'
+
+              return (
+                <article
+                  key={item.item_id}
+                  className="bg-white rounded-2xl border border-gray-200 p-5 shadow-sm flex flex-col gap-4"
+                >
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0">
+                      <p className="font-bold text-gray-900 leading-tight">{item.name}</p>
+                      <p className="mt-1 text-xs text-gray-500">{item.category}</p>
+                    </div>
+
+                    <span
+                      className={`shrink-0 rounded-full border px-2 py-1 text-[10px] font-bold uppercase ${
+                        available
+                          ? 'border-emerald-300 bg-emerald-50 text-emerald-800'
+                          : 'border-red-300 bg-red-50 text-red-800'
+                      }`}
+                    >
+                      {item.availability_status || 'unknown'}
+                    </span>
+                  </div>
+
+                  <p className="text-sm text-gray-600 min-h-10">{item.description}</p>
+
+                  <div className="mt-auto grid grid-cols-2 gap-3 border-t border-gray-100 pt-4">
+                    <div className="rounded-lg border border-gray-200 bg-[#FAF8F5] px-3 py-2">
+                      <p className="text-[9px] font-bold uppercase tracking-wider text-gray-500">
+                        item_id
+                      </p>
+                      <p className="mt-1 text-lg font-bold text-gray-900">{item.item_id}</p>
+                    </div>
+
+                    <div className="rounded-lg border border-gray-200 bg-[#FAF8F5] px-3 py-2">
+                      <p className="text-[9px] font-bold uppercase tracking-wider text-gray-500">
+                        price
+                      </p>
+                      <p className="mt-1 text-lg font-bold text-[#D98C5F]">
+                        ₱{item.price.toLocaleString(undefined, {
+                          minimumFractionDigits: 2,
+                          maximumFractionDigits: 2,
+                        })}
+                      </p>
                     </div>
                   </div>
                 </article>

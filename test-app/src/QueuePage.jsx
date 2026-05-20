@@ -1,5 +1,3 @@
-import { useState } from 'react'
-
 export default function AdminDashboardQueue({ onNewOrder }) {
   // Mock data for the orders
   const QUEUE_ORDERS = [

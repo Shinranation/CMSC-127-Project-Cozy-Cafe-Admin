@@ -154,7 +154,9 @@ export default function App() {
         <QueuePage onNewOrder={() => setPage('newOrder')} />
       )}
 
-      {page === 'newOrder' && adminSignedIn && <NewOrder />}
+      {page === 'newOrder' && adminSignedIn && (
+        <NewOrder onBack={() => setPage('queue')} />
+      )}
 
       {page === 'login' && (
         <Login
